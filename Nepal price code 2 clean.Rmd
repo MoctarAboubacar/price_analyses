@@ -1,0 +1,440 @@
+---
+title: "Nepal Market Price Analysis"
+author: "Moctar Aboubacar"
+date: "February 18, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Setup and load data
+```{r}
+setwd("C:/Users/moctar.aboubacar/Desktop/mVAM-EPR-CLEAR/mVAM/Price analysis")
+# packages
+require(zoo) # for the rollmean moving average function
+require(tidyverse)
+require(foreign)
+require(lubridate)
+require(tidyr)
+require(broom)
+require(ggthemes)
+
+###### Data ###### 
+file <- "C:/Users/moctar.aboubacar/Desktop/mVAM-EPR-CLEAR/mVAM/Price analysis/Book1.csv"
+dat <- read_csv(file)
+```
+
+#Prep data for analysis
+```{r}
+# convert all prices to numeric and location and commodities to factor
+dat[,6:ncol(dat)] <- lapply(dat[,6:ncol(dat)], as.double)
+
+dat.2 <- gather(dat, key = "date", value = "price", 6:ncol(dat))
+
+dat.2 <- as.data.frame(dat.2)
+
+dat.2 <- dat.2%>% #draw down the number of features, most not needed here
+  mutate(date = mdy(date),
+         Price.type = "Retail", 
+         mp_year = year(date),
+         mp_month = month(date),
+         mp_price = price,
+         Unit = "KG",
+         Currency = "NPR",
+         adm0_id = 1,
+         mkt_id = Location.code,
+         cm_id = Commodities.code,
+         cur_id = 1,
+         pt_id = 1,
+         um_id = Unit)
+
+dat.2$mp_month <- factor(dat.2$mp_month, levels = c(1:12))
+
+dat.3 <- dat.2%>%
+  mutate(ID = group_indices_(dat.2, .dots = c('mkt_id', 'cm_id')))%>% #create an 'ID' for each of the 96 combinations of commodities and locations
+  group_by(mkt_id, cm_id)%>%
+  mutate(counter = row_number())%>%
+  ungroup()
+```
+
+#Price spike ALPS model
+```{r}
+# regression model over all commodities in all locations
+df_list <- list()
+  
+for (i in 1:length(unique(dat.3$ID))){
+    df <- dat.3%>%
+      filter(ID == i)%>% # filter by commodity/location
+      mutate(counter = row_number()) # create a time counter
+
+    df <- df[!is.na(df$price),] # delete rows w missing price data...
+    model <- lm(price ~ counter + mp_month, data = df)
+    fitted <- fitted(model)
+    residu <- resid(model)
+    
+    df <- cbind(df, fitted)
+    df <- cbind(df, residu)
+  
+    df_list[[i]] <- df
+}
+dat.4 <- do.call(rbind, df_list) # bind all lists together in new dataframe
+
+# calculate the indicator
+dat.4 <- dat.4%>%
+  group_by(ID)%>%
+  mutate(sd_all = sd(residu))%>%
+  ungroup()%>%
+  mutate(indicator = residu/sd_all,
+         indi_stress = ifelse(indicator >=0.25 & indicator < 1, indicator,NA),
+         indi_alert = ifelse(indicator >= 1 & indicator < 2, indicator, NA),
+         indi_crisis = ifelse(indicator >= 2, indicator, NA))
+
+dat.4 <- dat.4%>%
+  mutate(dm_stress = ifelse(indicator >=0.25 & indicator < 1, 1, 0),
+         dm_alert = ifelse(indicator >= 1 & indicator < 2, 1, 0),
+         dm_crisis = ifelse(indicator >= 2, 1, 0))
+
+# Eliminate outliers > 4 std devs
+dat.4 <- dat.4[dat.4$indicator < 4 & dat.4$indicator > -4,]
+
+```
+```{r}
+#Refit the model (taking away potential high-influence outliers--this is a really lazy, unrefined way of doing it, which I like)
+names(dat.4)
+dat.4 <- dat.4[,1:21]
+
+df_list <- list()
+  
+for (i in 1:length(unique(dat.3$ID))){
+    df <- dat.3%>%
+      filter(ID == i)%>% # filter by commodity/location
+      mutate(counter = row_number()) # create a time counter
+
+    df <- df[!is.na(df$price),] # delete rows w missing price data...
+    model <- lm(price ~ counter + mp_month, data = df)
+    fitted <- fitted(model)
+    residu <- resid(model)
+    
+    df <- cbind(df, fitted)
+    df <- cbind(df, residu)
+  
+    df_list[[i]] <- df
+}
+dat.4 <- do.call(rbind, df_list) # bind all lists together in new dataframe
+
+# calculate the indicator
+dat.4 <- dat.4%>%
+  group_by(ID)%>%
+  mutate(sd_all = sd(residu))%>%
+  ungroup()%>%
+  mutate(indicator = residu/sd_all,
+         indi_stress = ifelse(indicator >= 0.25 & indicator < 1, indicator,NA),
+         indi_alert = ifelse(indicator >= 1 & indicator < 2, indicator, NA),
+         indi_crisis = ifelse(indicator >= 2, indicator, NA))
+
+dat.4 <- dat.4%>%
+  mutate(dm_stress = ifelse(indicator >=0.25 & indicator < 1, 1, 0),
+         dm_alert = ifelse(indicator >= 1 & indicator < 2, 1, 0),
+         dm_crisis = ifelse(indicator >= 2, 1, 0),
+         dm_allspikes = ifelse(indicator >= 0.25, 1, 0),
+         dm_seriousspikes = ifelse(indicator >= 1, 1, 0))
+
+```
+
+#Plotting price spikes (unfinished)
+```{r}
+#sample of 1 commodity/location (1:96)
+dat.test <- dat.4%>%
+  filter(ID == 20)
+ggplot(dat.test, aes(x = date, y = price))+
+  geom_line()+
+  geom_point(aes(x = date, y = price), alpha = 0.5)
+   
+## get start points in a vector
+    
+# create start and end points of bad periods
+dat.test$dm_stress_prev <- lag(dat.test$dm_stress) 
+dat.test$dm_stress_post <- lead(dat.test$dm_stress)
+dat.test$dm_stress_post2 <- lead(dat.test$dm_stress, 2)
+dat.test$dm_alert_prev <- lag(dat.test$dm_alert) 
+dat.test$dm_alert_post <- lead(dat.test$dm_alert)
+dat.test$dm_alert_post2 <- lead(dat.test$dm_alert, 2)
+dat.test$dm_crisis_prev <- lag(dat.test$dm_crisis) 
+dat.test$dm_crisis_post <- lead(dat.test$dm_crisis)
+dat.test$dm_crisis_post2 <- lead(dat.test$dm_crisis, 2)
+
+#put an additional point before the single spikes to enable visualization
+##############THIS IS NOT WORKING RN please fix
+# Replace NAs with 0s in all dm_stress etc vars
+  
+
+dat.test$dm_stress <- ifelse(dat.test$dm_stress == 0 & dat.test$dm_stress_post == 1 & dat.test$dm_stress_post2 == 0, 1, 0)
+dat.test$dm_alert <- ifelse(dat.test$dm_alert == 0 & dat.test$dm_alert_post == 1 & dat.test$dm_alert_post2 == 0, 1, 0)
+dat.test$dm_crisis <- ifelse(dat.test$dm_crisis == 0 & dat.test$dm_crisis_post == 1 & dat.test$dm_crisis_post2 == 0, 1, 0)
+
+sum(dat.test$dm_stress == 1 & dat.test$dm_stress_prev == 0)
+
+# put those into data frames
+start_pts_stress <- dat.test$date[dat.test$dm_stress == 1 & dat.test$dm_stress_prev == 0]
+end_pts_stress <- dat.test$date[dat.test$dm_stress == 1 & dat.test$dm_stress_post == 0]
+start_pts_alert <- dat.test$date[dat.test$dm_alert == 1 & dat.test$dm_alert_prev == 0]
+end_pts_alert <- dat.test$date[dat.test$dm_alert == 1 & dat.test$dm_alert_post == 0]
+start_pts_crisis <- dat.test$date[dat.test$dm_crisis == 1 & dat.test$dm_crisis_prev == 0]
+end_pts_crisis <- dat.test$date[dat.test$dm_crisis == 1 & dat.test$dm_crisis_post == 0]
+
+# combine start and finish into single dataframe
+rect_prices_stress <- data.frame(start = start_pts_stress, end = end_pts_stress, group = seq_along(start_pts_stress))
+rect_prices_alert <- data.frame(start = start_pts_alert, end = end_pts_alert, group = seq_along(start_pts_alert))
+rect_prices_crisis <- data.frame(start = start_pts_crisis, end = end_pts_crisis, group = seq_along(start_pts_crisis))
+
+
+# problems: we still can't get readings for a single point with no other peaks on both sides...what to do!
+####one option: for each isolated point, just take 2 when you overlay the colors...it's over 10 years, it's fine~
+plot <- ggplot(dat.test, aes(x = date, y = price))+
+  geom_line()+
+  geom_rect(data = rect_prices_stress, inherit.aes = FALSE, aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf), color = "transparent", fill = "yellow", alpha = 0.3)+
+  geom_rect(data = rect_prices_alert, inherit.aes = FALSE, aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf), color = "transparent", fill = "orange", alpha = 0.3)+
+  geom_rect(data = rect_prices_crisis, inherit.aes = FALSE, aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf), color = "transparent", fill = "red", alpha = 0.3)+
+  ggtitle("Market Prices Over Time")
+
+```
+
+1. The Price Premium
+On average, commodity prices in the hill and mountain markets are higher than those of the terai.
+
+# 1.1 Average prices of Mountain/Hills - Terai - Major markets over time
+```{r}
+table1_1 <- dat.4%>%
+  filter(Markets != "Major consumer market")%>%
+  group_by(date, Commodities, Markets)%>%
+  summarize(avg.price = mean(price))
+  
+ggplot(table1_1, aes(x = date, y = avg.price, color = Markets))+
+  geom_smooth(method = 'loess', se = F)+
+  facet_wrap(~ Commodities, scales = 'free_y')
+
+# correlations in each commodity across Terai/Hill Mountain
+table1_cor <- table1_1 %>% 
+  spread(key = Markets, value = avg.price) %>% 
+  group_by(Commodities)
+
+result <- by(table1_cor[,3:4], table1_cor$Commodities, function(x) {cor(x$`Mountain & Hill`, x$Terai)})
+
+result.df <- as.data.frame(as.matrix(result))
+
+```
+
+# 1.2 Table showing the average % difference between terai/mountain-hill markets in prices
+```{r}
+table1_2 <- dat.4%>%
+  group_by(Year = year(date), Commodities, Markets)%>%
+  summarize(avg.price = mean(price))%>%
+  spread(Markets, avg.price)%>%
+  group_by(Year, Commodities)%>%
+  summarize(avg.percent.diff = round((`Mountain & Hill` - Terai)/Terai, digits = 3))%>%
+  spread(Year, avg.percent.diff)
+
+# heatmap table and viz
+table1_3 <- dat.4%>%
+  filter(Commodities != "Red Potato")%>%
+  group_by(Year = year(date), Commodities, Markets)%>%
+  summarize(avg.price = mean(price))%>%
+  spread(Markets, avg.price)%>%
+  group_by(Year, Commodities)%>%
+  summarize(avg.percent.diff = round((`Mountain & Hill` - Terai)/Terai, digits = 3))
+
+#heatmap without Red Potatoes, which throw my scale so off, and are really hard to explain
+base_size <- 9
+heatmap1_2 <- ggplot(table1_3, aes(x = Year, y = Commodities))+
+  geom_tile(aes(fill = avg.percent.diff))+
+  scale_fill_distiller(palette = "Spectral")+
+  theme_grey(base_size = base_size)+
+  theme(axis.ticks = element_blank())+
+  labs(x = "",
+       y = "")+
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0))+
+  ggtitle("Heatmap")
+
+```
+
+
+2. Price Volatility
+Price volatility seems to affect both Terai and Mountain/hill markets equally, though not across all commodities equally
+```{r}
+#Total incidence of spikes over the years for each Market type, by commodity
+table2_1 <- dat.4%>%
+  filter(Markets != "Major consumer market")%>%
+  group_by(Markets, Commodities, Year = year(date))%>%
+  summarize(Average_all = mean(dm_allspikes)*12,
+            Average_serious = mean(dm_seriousspikes)*12)
+graph2_1_1 <- table2_1%>%
+  ggplot(aes(x = Year, y = Average_all, color = Markets))+
+  geom_smooth(se = FALSE)+
+  facet_wrap(~Commodities, scales = 'free_y')
+graph2_1_2 <- table2_1%>%
+  ggplot(aes(x = Year, y = Average_serious, color = Markets))+
+  geom_smooth(se = FALSE)+
+  facet_wrap(~Commodities, scales = 'free_y')
+
+# Terai
+table2_2 <- dat.4%>%
+  filter(Markets == "Terai")%>%
+  group_by(Markets, Commodities, Year = year(date))%>%
+  summarize(Stress = mean(dm_stress)*12,
+            Alert = mean(dm_alert)*12,
+            Crisis = mean(dm_crisis)*12)
+table2_2 <- table2_2%>% gather(key = Level, value = Incidence, Stress:Crisis)
+graph2_2 <- table2_2%>%
+  ggplot(aes(x = Year, y = Incidence, color = Level))+
+  geom_smooth(method = 'loess', se = F)+
+  facet_wrap(~ Commodities)
+
+# Mountain-Hills
+table2_3 <- dat.4%>%
+  filter(Markets == "Mountain & Hill")%>%
+  group_by(Markets, Commodities, Year = mp_year)%>%
+  summarize(Stress = mean(dm_stress)*12,
+            Alert = mean(dm_alert)*12,
+            Crisis = mean(dm_crisis)*12)
+table2_3 <- table2_3%>% gather(key = Level, value = Incidence, Stress:Crisis)
+graph2_3 <- table2_3%>%
+  ggplot(aes(x = Year, y = Incidence, color = Level))+
+  geom_smooth(method = 'loess', se = F)+
+  facet_wrap(~ Commodities)
+```
+
+```{r}
+# Average deviation for each of the commodities in the terai over time (shows times where there were more deviations in the markets than others)
+table2_4 <- dat.4%>%
+  filter(Markets == "Terai")%>%
+  group_by(Commodities, Markets, date)%>%
+  summarize(indicator = mean(indicator))
+#Deviations for Terai Markets
+dev_terai <- ggplot(table2_4, aes(x = date, y = indicator))+
+  geom_line()+
+  facet_wrap(~Commodities, scales = 'free_y')+
+  geom_hline(yintercept = 1, color = "red")+
+  geom_hline(yintercept = -1, color = "red")
+
+# Average deviation for each of the commodities in the Mountains-Hills over time (shows times where there were more deviations in the markets than others)
+table2_5 <- dat.4%>%
+  filter(Markets == "Mountain & Hill")%>%
+  group_by(Commodities, Markets, date)%>%
+  summarize(indicator = mean(indicator))
+
+#Deviations for Hill + Mountain markets
+dev_mtn <- ggplot(table2_5, aes(x = date, y = indicator))+
+  geom_line()+
+  facet_wrap(~Commodities, scales = 'free_y')+
+  geom_hline(yintercept = 1, color = "red")+
+  geom_hline(yintercept = -1, color = "red")
+
+# Average deviation for each of the commodities in Jumla/Bajura over time (shows times where there were more deviations in the markets than others)
+
+table2_6 <- dat.4%>%
+  filter(Location == c("Jumla", "Bajura"))%>%
+  group_by(Commodities, Markets, date)%>%
+  summarize(indicator = mean(indicator))
+#But there's not significant difference from Mountains here
+dev_iso <- ggplot(table2_6, aes(x = date, y = indicator))+
+  geom_line()+
+  facet_wrap(~ Commodities, scales = 'free_y')+
+  annotate("rect", xmin = min(table2_4$date), xmax = max(table2_4$date), ymin = -2, ymax = 2, fill = "yellowgreen", alpha = 0.6)+
+  annotate("rect", xmin = min(table2_4$date), xmax = max(table2_4$date), ymin = 2, ymax = Inf, fill = "tomato", alpha = 0.6)+
+  annotate("rect", xmin = min(table2_4$date), xmax = max(table2_4$date), ymin = -Inf, ymax = -2, fill = "tomato", alpha = 0.6)+
+  theme_bw()
+  
+```
+
+
+3. Seasonality
+We look at detrended time series for all 10 years (8 full years), for the different markets, and see how the seasonal fluctuation is, especially when we overlay the areas corresponding to the lean/harvest seasons.
+
+```{r}
+# 'linear detrending' from a regression that doesn't include month fixed effects
+simpletrend <- dat.3 %>% 
+  nest(-c(Markets, Location, Commodities)) %>% 
+  mutate(models = map(data, ~ fitted(lm(price ~ counter, .))),
+         tidied = map(models, tidy)) %>% 
+  unnest(tidied) %>% 
+  mutate(counter = as.integer(names),
+         simplefitted = x)
+
+dat.simpletrend <- inner_join(dat.4, simpletrend, by = c("Location", "Commodities", "counter")) # now has the fitted 
+
+
+###########Jumla rice vs. terai rice + look at ones that might fluctuate a lot seasonally
+#*******this is killing me.... I want to overlay the monthly averages across all years onto each chart.....******
+test1 <- dat.simpletrend %>%
+  mutate(detrend = simplefitted - price)
+
+
+test2 <- test1 %>% 
+  group_by(mp_month, Commodities, Location) %>% 
+  summarise(avg_detrend = mean(detrend))
+  
+ggplot(test1, aes(x = mp_month, y = detrend))+
+  geom_line(group = factor(mp_year))+
+  geom_line(data = test2)+
+  facet_wrap(Commodities ~ Location)
+
+
+
+# simple and ugly, works for me!
+dat.simpletrend.terai <- dat.simpletrend %>%
+  filter(Markets.x == "Terai") %>% 
+  mutate(detrend = simplefitted - price) %>% 
+  group_by(Commodities, Markets.x, mp_month, mp_year) %>% 
+  summarise(pricetrend = mean(detrend),
+            fittrend = mean(simplefitted),
+            avgprice = mean(price))
+
+
+dat.simpletrend.mt <- dat.simpletrend %>%
+  filter(Markets.x == "Mountain & Hill") %>% 
+  mutate(detrend = simplefitted - price) %>% 
+  group_by(Commodities, Markets.x, mp_month, mp_year) %>% 
+  summarise(pricetrend = mean(detrend),
+            fittrend = mean(simplefitted),
+            avgprice = mean(price))
+
+
+dat.simpletrend.mcm <- dat.simpletrend %>%
+  filter(Markets.x == "Major consumer market") %>% 
+  mutate(detrend = simplefitted - price) %>% 
+  group_by(Commodities, Markets.x, mp_month, mp_year) %>% 
+  summarise(pricetrend = mean(detrend),
+            fittrend = mean(simplefitted),
+            avgprice = mean(price))
+
+
+# graph per commodity, per market type
+season_terai <- ggplot(dat.simpletrend.terai, aes(x = as.integer(mp_month), y = pricetrend, group = factor(mp_year)))+
+geom_line()+
+facet_wrap(~Commodities,
+           scales = 'free_y')
+
+
+season_mountain <- ggplot(dat.simpletrend.mt, aes(x = as.integer(mp_month), y = pricetrend, group = factor(mp_year)))+
+geom_line()+
+facet_wrap(~Commodities,
+           scales = 'free_y')
+
+
+season_mcm <- ggplot(dat.simpletrend.mcm, aes(x = as.integer(mp_month), y = pricetrend, color = factor(mp_year)))+
+geom_line(color = "grey90")+
+geom_line()+
+stat_summary(aes(group = factor(mp_year)),
+             fun.y = mean,
+             geom = "line")+
+facet_wrap(~Commodities,
+           scales = 'free_y')
+
+
+
+
+
+```
