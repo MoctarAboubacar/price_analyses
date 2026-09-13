@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Setup and load data
 ```{r}
-setwd("C:/Users/moctar.aboubacar/Desktop/mVAM-EPR-CLEAR/mVAM/Price analysis")
+# Paths are resolved relative to the project root via here::here().
 # packages
 require(zoo) # for the rollmean moving average function
 require(tidyverse)
@@ -22,7 +22,7 @@ require(broom)
 require(ggthemes)
 
 ###### Data ###### 
-file <- "C:/Users/moctar.aboubacar/Desktop/mVAM-EPR-CLEAR/mVAM/Price analysis/Book1.csv"
+file <- here::here("data", "Book1.csv")
 dat <- read_csv(file)
 ```
 

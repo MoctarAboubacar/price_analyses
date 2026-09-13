@@ -13,7 +13,7 @@ require(zoo)
 
 # setup and load data ####
 
-setwd("C:/Users/moctar.aboubacar/Desktop/price analysis 2.0")
+# Paths are resolved relative to the project root via here::here().
 
 dat <- read_csv("combined markets.csv")
 
@@ -49,7 +49,7 @@ dat.long$year <- factor(dat.long$year)
 glimpse(dat.long)
 
 # create unique ID for each of the 96 combinations of market/commodity
-# create a counter within each of the 96 combinations, numbering the successive 
+# create a counter within each of the 96 combinations, numbering the successive time periods
 
 dat.2 <- dat.long%>%
   mutate(ID = group_indices_(dat.long, .dots = c('Location.code', 'Commodities.code')))%>% #create an 'ID' for each of the 96 combinations of commodities and locations
@@ -59,7 +59,7 @@ dat.2 <- dat.long%>%
 
 # check stationarity-unit root test ####
 
-# create different data frames for each of the 96
+# create different data frames for each of the 96 combinations
 # convert to time series, gather them in a list and apply the test to all areas
 # draw conclusions as necessary and prep for actual ALPS model
 dat.simp <- dat.2[,7]
@@ -149,7 +149,7 @@ dat.4[,char_to_dbl] <- map(dat.4[char_to_dbl], as.double)
 
 
 # save file to .csv
-write.csv(dat.4, "C:/Users/moctar.aboubacar/Desktop/price analysis 2.0/prices-out.csv")
+write.csv(dat.4, here::here("output", "prices-out.csv"))
 
 # try the whole thing with prices starting in 2015, see if there are more stationary series...
  
@@ -174,9 +174,3 @@ dat.4 %>%
 # dat.3 <- dat.3 %>% 
 #   mutate(model = map(dat.3$data, model)) %>% 
 #   unnest()
-
-
-# Predict values for each point, then link them up in a graph.
-# figure out how to deal with missing values
-
-
